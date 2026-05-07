@@ -1,0 +1,1491 @@
+#ENMAP CONVOLUIDO: ETAPA 01: SRF OLCI
+
+import numpy as np
+import pandas as pd
+import glob
+import re
+
+srf_folder = r"/content/drive/MyDrive/Mestrado/Spectral_Classification_02/srf_s3a_bands"
+
+files = glob.glob(srf_folder + "/rtcoef_sentinel3_1_olci_srf_ch*.txt")
+
+print("Total de arquivos:", len(files))
+def get_channel_number(filepath):
+    return int(re.search(r"ch(\d+)", filepath).group(1))
+
+for f in files[:10]:
+    print(f, "->", get_channel_number(f))
+
+files = sorted(files, key=get_channel_number)
+
+# Verificar se ficou certo
+for f in files[:20]:
+    print(f, "->", get_channel_number(f))
+
+print(files[-1], get_channel_number(files[-1]))
+
+TESTES
+
+files = sorted(files, key=get_channel_number)
+
+print(get_channel_number(files[0]))
+print(get_channel_number(files[14]))
+print(get_channel_number(files[15]))
+print(get_channel_number(files[-1]))
+
+CRIAÇÃO DE SRFS MEDIAS
+
+wl_common = np.arange(350, 1100, 0.1)
+from scipy.interpolate import interp1d
+
+srf_bandas = {}
+
+for band in range(1, 22):
+
+    ch_start = (band - 1) * 15
+    ch_end   = band * 15
+
+    srfs_interp = []
+
+    for f in files[ch_start:ch_end]:
+
+        data = pd.read_csv(
+            f,
+            skiprows=4,
+            sep=r"\s+",
+            names=["wn", "resp"]
+        )
+
+        # Conversão cm⁻¹ → nm
+        wl = 1e7 / data["wn"].values
+        resp = data["resp"].values
+
+        # Ordenar crescente
+        idx = np.argsort(wl)
+        wl = wl[idx]
+        resp = resp[idx]
+
+        # Interpolar na grade comum
+        f_interp = interp1d(
+            wl,
+            resp,
+            bounds_error=False,
+            fill_value=0
+        )
+
+        srfs_interp.append(f_interp(wl_common))
+
+    # Média dos 15 detectores
+    srf_mean = np.mean(srfs_interp, axis=0)
+
+    # Normalizar área para 1
+    area = np.trapz(srf_mean, wl_common)
+    if area > 0:
+        srf_mean /= area
+
+    srf_bandas[band] = srf_mean
+
+print("✅ SRFs médias criadas corretamente.")
+
+for band in range(1, 22):
+    peak = wl_common[np.argmax(srf_bandas[band])]
+    print(f"Banda {band}: pico em {round(peak,2)} nm")
+
+RESULTADO FINAL: DICIONARIO DE ARRAYS: 0 -> 21 (N° DE BANDAS)
+
+srf_bandas
+
+ABRINDO ENMAP 300 M
+
+import rasterio
+import numpy as np
+
+# Caminho do arquivo
+file_path = '/content/EnMAP_BG_300m_2022 (1).tif'
+
+try:
+    with rasterio.open(file_path) as src:
+        print("="*50)
+        print(f"📄 INFORMAÇÕES DO ARQUIVO: {file_path.split('/')[-1]}")
+        print("="*50)
+
+        # 1. Dimensões e Contagem de Bandas
+        print(f"Bandas: {src.count}")
+        print(f"Largura (Width): {src.width} pixels")
+        print(f"Altura (Height): {src.height} pixels")
+
+        # 2. Sistema de Referência Geográfica (CRS)
+        print(f"CRS: {src.crs}")
+
+        # 3. Transformação Afim (Geotransformação)
+        # Mostra as coordenadas do canto superior esquerdo e a resolução
+        print(f"Resolução Pixel (x, y): {src.res}")
+        print(f"Extensão (Bounds): \n   Left:   {src.bounds.left}\n   Bottom: {src.bounds.bottom}\n   Right:  {src.bounds.right}\n   Top:    {src.bounds.top}")
+
+        # 4. Tipos de dados e estatísticas básicas da primeira banda
+        print(f"Data Type: {src.dtypes[0]}")
+
+        # Lendo a primeira banda para calcular Min/Max (opcional)
+        band1 = src.read(1)
+        # Ignora valores NoData se houver
+        nodata = src.nodata
+        valid_data = band1[band1 != nodata] if nodata is not None else band1
+
+        print(f"Mínimo (Banda 1): {np.min(valid_data)}")
+        print(f"Máximo (Banda 1): {np.max(valid_data)}")
+        print(f"Valor NoData: {src.nodata}")
+        print("="*50)
+
+except Exception as e:
+    print(f"❌ Erro ao abrir o arquivo: {e}")
+
+import xarray as xr
+import pandas as pd
+
+# Caminho do arquivo Sentinel-3
+file_path_s3 = '/content/S3A_OLCI_2022_07_03_12_15_13_FR_L2W_projected (1).nc'
+
+try:
+    # Abrindo o dataset
+    ds = xr.open_dataset(file_path_s3)
+
+    print("="*80)
+    print(f"📊 INSPEÇÃO DO ARQUIVO NETCDF: {file_path_s3.split('/')[-1]}")
+    print("="*80)
+
+    # 1. Dimensões (Geralmente 'x' e 'y' ou 'lat' e 'lon')
+    print("\n[DIMENSÕES]")
+    print(ds.dims)
+
+    # 2. Variáveis de Dados (Aqui você verá as Rrs_412, Rrs_443, etc.)
+    print("\n[VARIÁVEIS DISPONÍVEIS]")
+    # Listamos apenas as primeiras para não inundar o console, ou todas se preferir
+    vars_list = list(ds.data_vars)
+    print(f"Total de variáveis: {len(vars_list)}")
+    print(f"Exemplos: {vars_list}")
+
+    # 3. Atributos Globais (Metadados de processamento)
+    print("\n[METADADOS GLOBAIS - RESUMO]")
+    # Exibe informações como o sensor, data de criação e histórico
+    for attr in ['title', 'source', 'sensor', 'creation_time']:
+        if attr in ds.attrs:
+            print(f"{attr.capitalize()}: {ds.attrs[attr]}")
+
+    # 4. Verificação de Coordenadas
+    print("\n[COORDENADAS GEOGRÁFICAS]")
+    if 'lat' in ds.coords and 'lon' in ds.coords:
+        lat_min, lat_max = ds.lat.min().values, ds.lat.max().values
+        lon_min, lon_max = ds.lon.min().values, ds.lon.max().values
+        print(f"Latitude:  {lat_min:.4f}° a {lat_max:.4f}°")
+        print(f"Longitude: {lon_min:.4f}° a {lon_max:.4f}°")
+    else:
+        print("⚠️ Coordenadas lat/lon não encontradas como índices diretos.")
+
+    # 5. Detalhe de uma variável específica (ex: Rrs_560 - banda do verde)
+    test_var = 'Rrs_560'
+    if test_var in ds.variables:
+        print(f"\n[DETALHE DA VARIÁVEL: {test_var}]")
+        print(ds[test_var].attrs)
+
+    print("\n" + "="*80)
+
+except Exception as e:
+    print(f"❌ Erro ao abrir o arquivo NetCDF: {e}")
+
+# DICA: Para ver a estrutura interativa no Google Colab,
+# basta digitar apenas 'ds' em uma célula de código e rodar.
+# ds
+
+import rasterio
+import xarray as xr
+from pyproj import CRS
+
+# 1. Dados do EnMAP (GeoTIFF)
+enmap_path = '/content/EnMAP_BG_300m_2022 (1).tif'
+with rasterio.open(enmap_path) as src:
+    enmap_crs = src.crs
+    enmap_bounds = src.bounds
+    enmap_res = src.res
+
+# 2. Dados do Sentinel-3 (NetCDF)
+s3_path = '/content/S3A_OLCI_2022_07_03_12_15_13_FR_L2W_projected (1).nc'
+ds_s3 = xr.open_dataset(s3_path)
+
+# No NetCDF, o CRS geralmente está na variável 'transverse_mercator' ou similar
+s3_crs_wkt = ds_s3.transverse_mercator.attrs.get('spatial_ref')
+s3_crs = CRS.from_wkt(s3_crs_wkt) if s3_crs_wkt else "Não encontrado"
+
+# Extensão do Sentinel-3 baseada nas coordenadas x e y (metros)
+s3_left, s3_right = ds_s3.x.min().values, ds_s3.x.max().values
+s3_bottom, s3_top = ds_s3.y.min().values, ds_s3.y.max().values
+
+print("="*60)
+print("🔍 VERIFICAÇÃO DE ALINHAMENTO ESPACIAL")
+print("="*60)
+
+print(f"\n[SISTEMA DE COORDENADAS (CRS)]")
+print(f"EnMAP:      {enmap_crs} (UTM 23S)")
+print(f"Sentinel-3: {s3_crs.to_string() if hasattr(s3_crs, 'to_string') else s3_crs}")
+
+print(f"\n[RESOLUÇÃO ESPACIAL]")
+print(f"EnMAP:      {enmap_res[0]}m x {enmap_res[1]}m")
+# Calculando resolução do S3 pela diferença entre pixels adjacentes
+s3_res_x = abs(ds_s3.x[1] - ds_s3.x[0]).values
+print(f"Sentinel-3: {s3_res_x}m")
+
+print(f"\n[EXTENSÃO GEOGRÁFICA (BOUNDS)]")
+print(f"EnMAP:      L:{enmap_bounds.left:.1f}, R:{enmap_bounds.right:.1f}, B:{enmap_bounds.bottom:.1f}, T:{enmap_bounds.top:.1f}")
+print(f"Sentinel-3: L:{s3_left:.1f}, R:{s3_right:.1f}, B:{s3_bottom:.1f}, T:{s3_top:.1f}")
+
+# Verificação de Intersecção
+if (s3_left < enmap_bounds.right and s3_right > enmap_bounds.left and
+    s3_bottom < enmap_bounds.top and s3_top > enmap_bounds.bottom):
+    print("\n✅ As imagens possuem intersecção geográfica!")
+else:
+    print("\n❌ Alerta: As imagens parecem não se sobrepor!")
+print("="*60)
+
+pip install rioxarray
+
+import rioxarray
+import xarray as xr
+from rasterio.enums import Resampling
+
+# 1. Carregar o EnMAP como referência (usando rioxarray)
+enmap_ref = rioxarray.open_rasterio('/content/EnMAP_BG_300m_2022 (1).tif')
+
+# 2. Carregar o Sentinel-3
+ds_s3 = xr.open_dataset('/content/S3A_OLCI_2022_07_03_12_15_13_FR_L2W_projected (1).nc')
+
+# Precisamos garantir que o S3 tenha o CRS definido manualmente,
+# já que ele "não foi encontrado" no teste anterior, mas sabemos que ele está em metros.
+# Vamos assumir EPSG:32723 (UTM 23S) baseado na sua área de estudo (Guanabara)
+if ds_s3.rio.crs is None:
+    ds_s3.rio.write_crs("EPSG:32723", inplace=True)
+
+# 3. Alinhamento Espacial (Reproject Match)
+# Isso vai recortar o S3 para a extensão do EnMAP e garantir que os pixels coincidam 1:1
+print("🔄 Alinhando Sentinel-3 ao grid do EnMAP...")
+ds_s3_aligned = ds_s3.rio.reproject_match(
+    enmap_ref,
+    resampling=Resampling.nearest  # Mantém os valores originais dos pixels
+)
+
+print("✅ Alinhamento concluído!")
+
+# 4. Verificação Final de Shape
+print("\n[VERIFICAÇÃO DE MATRIZ]")
+print(f"Shape EnMAP (bandas, y, x): {enmap_ref.shape}")
+# Selecionando uma banda de teste do S3 alinhado
+s3_shape = ds_s3_aligned['Rrs_560'].shape
+print(f"Shape S3 Alinhado (y, x):    {s3_shape}")
+
+if (enmap_ref.shape[1], enmap_ref.shape[2]) == s3_shape:
+    print("\n🚀 PERFEITO! As matrizes agora têm as mesmas dimensões.")
+    print("Você já pode subtrair uma da outra ou comparar pixel a pixel.")
+else:
+    print("\n⚠️ Os shapes ainda divergem. Verifique se as dimensões x/y estão invertidas.")
+
+import numpy as np
+import matplotlib.pyplot as plt
+import xml.etree.ElementTree as ET
+from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+import matplotlib.font_manager as fm
+
+# ============================================================================
+# 1. EXTRAÇÃO DE COMPRIMENTOS DE ONDA (METADADOS EnMAP)
+# ============================================================================
+
+def parse_enmap_metadata(xml_path):
+    """Extrai comprimentos de onda dos metadados EnMAP"""
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+    wavelengths = []
+    for band in root.findall(".//bandID"):
+        wl = band.findtext("wavelengthCenterOfBand")
+        if wl:
+            wavelengths.append(float(wl))
+    return np.array(wavelengths)
+
+# Extrair os Wavelengths reais do seu XML
+wavelengths_enmap = parse_enmap_metadata('/content/metadados2022.XML')
+print(f"✅ Extraídas {len(wavelengths_enmap)} bandas do EnMAP.")
+
+# ============================================================================
+# 2. SELEÇÃO E NORMALIZAÇÃO DAS BANDAS RGB
+# ============================================================================
+
+def get_rgb_stretched(data_cube, wls, r_target=665, g_target=560, b_target=443):
+    """Localiza bandas próximas aos alvos e aplica realce de contraste"""
+    # Encontrar índices das bandas mais próximas
+    idx_r = np.abs(wls - r_target).argmin()
+    idx_g = np.abs(wls - g_target).argmin()
+    idx_b = np.abs(wls - b_target).argmin()
+
+    print(f"   Usando bandas EnMAP: R={wls[idx_r]:.1f}nm, G={wls[idx_g]:.1f}nm, B={wls[idx_b]:.1f}nm")
+
+    rgb = np.stack([data_cube[idx_r], data_cube[idx_g], data_cube[idx_b]], axis=-1)
+
+    # Tratamento de dados: remover NaNs e valores negativos
+    rgb = np.nan_to_num(rgb, nan=0.0)
+    rgb[rgb < 0] = 0
+
+    # Realce de contraste (Linear Stretch 2% - 98%)
+    for i in range(3):
+        p2, p98 = np.percentile(rgb[..., i], (2, 98))
+        if p98 > p2:
+            rgb[..., i] = np.clip((rgb[..., i] - p2) / (p98 - p2), 0, 1)
+
+    return rgb
+
+# Gerar arrays RGB
+rgb_enmap_img = get_rgb_stretched(enmap_ref.values, wavelengths_enmap)
+
+# Para o S3, as bandas já são nomeadas pela Rrs_nm no dataset alinhado
+rgb_s3_img = np.stack([
+    ds_s3_aligned['Rrs_665'].values,
+    ds_s3_aligned['Rrs_560'].values,
+    ds_s3_aligned['Rrs_443'].values
+], axis=-1)
+
+# Aplicar o mesmo realce no S3 para comparação visual justa
+for i in range(3):
+    p2, p98 = np.percentile(np.nan_to_num(rgb_s3_img[..., i]), (2, 98))
+    rgb_s3_img[..., i] = np.clip((rgb_s3_img[..., i] - p2) / (p98 - p2), 0, 1)
+
+# ============================================================================
+# 3. PLOTAGEM CARTOGRÁFICA LADO A LADO (CORRIGIDO PARA FUNDO PRETO)
+# ============================================================================
+
+# Usamos o wspace=0 para colar os mapas completamente e gridspec_kw para melhor controle
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10), gridspec_kw={'wspace': 0})
+
+# Extraindo a extensão geográfica UTM do enmap_ref
+try:
+    left, bottom, right, top = enmap_ref.rio.bounds()
+    extent = [left, right, bottom, top]
+    print(f"📍 Extensão geográfica UTM definida para ambos: {extent}")
+except NameError:
+    # Caso a célula de alinhamento espacial não tenha sido executada
+    # (Usaremos os valores que aparecem na imagem_0.png como fallback)
+    extent = [675000, 705000, 7453000, 7492000]
+    print(f"⚠️ 'enmap_ref' não encontrado. Usando extensão UTM de fallback (aproximada): {extent}")
+
+for ax, img, title in zip([ax1, ax2], [rgb_enmap_img, rgb_s3_img],
+                          ['EnMAP RGB (300m) ~ 10:00', 'Sentinel-3 OLCI RGB ~ 09:00']):
+
+    # --- MODIFICAÇÃO PRINCIPAL: DEFINIR O FUNDO DO EIXO COMO PRETO ---
+    # Isso garante que qualquer área sem dados (incluindo NaNs na imagem original)
+    # ou o fundo do próprio gráfico seja plotada como preto.
+    ax.set_facecolor('black')
+
+    # Mostrar imagem
+    # interpolation='nearest' é importante para dados de 300m para não suavizar
+    ax.imshow(img, extent=extent, origin='upper', interpolation='nearest')
+
+    ax.set_title(title, fontsize=18, fontweight='bold', pad=20)
+
+    # 1. Grid de Coordenadas (em branco para destacar)
+    ax.grid(True, linestyle=':', alpha=0.6, color='white', linewidth=1)
+
+    # 2. Seta do Norte
+    # Posicionada no canto superior esquerdo (coordenadas de eixos fraction 0.0-1.0)
+    ax.annotate('N', xy=(0.08, 0.94), xycoords='axes fraction',
+                arrowprops=dict(facecolor='white', edgecolor='black', width=4, headwidth=12),
+                ha='center', va='center', fontsize=22, color='white', fontweight='bold',
+                # Bbox para garantir visibilidade
+                bbox=dict(boxstyle="round,pad=0.3", fc="black", alpha=0.3, ec="none"))
+
+    # 3. Escala Gráfica (Barra de 3km)
+    scalebar = AnchoredSizeBar(ax.transData,
+                               3000, '3 km', 'lower right',
+                               pad=0.8,
+                               color='white',
+                               frameon=False,
+                               size_vertical=120,
+                               fontproperties=fm.FontProperties(size=14, weight='bold'))
+    ax.add_artist(scalebar)
+
+    # Ajustes de eixos
+    ax.tick_params(axis='both', labelsize=10)
+    ax.set_xlabel('Leste (m)', fontsize=12, fontweight='bold')
+
+# Estética Final
+ax1.set_ylabel('Norte (m)', fontsize=12, fontweight='bold')
+ax2.set_yticklabels([]) # Remove labels do eixo Y para colar os mapas e não poluir
+
+# Título Principal (cor preta para o fundo branco da figura)
+plt.suptitle('EnMAP e Sentinel-3: Baía de Guanabara, 2022',
+             fontsize=22, fontweight='black', y=0.98)
+
+# Salvar a figura (bbox_inches='tight' é essencial)
+plt.savefig('visual_comparison_black_bg.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+print("✅ Mapa comparativo gerado com sucesso com ambos os fundos pretos!")
+
+CORTE
+
+# Definir os limites
+wl_min = 412
+wl_max = 768
+
+# Criar uma máscara booleana para as bandas desejadas
+mask_enmap = (wavelengths_enmap >= wl_min) & (wavelengths_enmap <= wl_max)
+
+# Filtrar os comprimentos de onda e o dado
+wavelengths_enmap_clipped = wavelengths_enmap[mask_enmap]
+enmap_ref_clipped = enmap_ref.isel(band=mask_enmap)
+
+print(f"EnMAP Original: {len(wavelengths_enmap)} bandas")
+print(f"EnMAP Cortado ({wl_min}-{wl_max}nm): {len(wavelengths_enmap_clipped)} bandas")
+
+import re
+
+# Lista para armazenar as bandas que ficam
+s3_keep_vars = []
+
+for var in ds_s3_aligned.data_vars:
+    # Procura por números no nome da variável (ex: 'Rrs_560' -> 560)
+    match = re.search(r'(\d+)', var)
+    if match:
+        wl = int(match.group(1))
+        if wl_min <= wl <= wl_max:
+            s3_keep_vars.append(var)
+
+# Criar novo dataset apenas com as bandas filtradas
+ds_s3_clipped = ds_s3_aligned[s3_keep_vars]
+
+print(f"Sentinel-3 Original: {len(ds_s3_aligned.data_vars)} variáveis")
+print(f"Sentinel-3 Cortado: {len(ds_s3_clipped.data_vars)} variáveis")
+print(f"Bandas S3 mantidas: {sorted(s3_keep_vars)}")
+
+#ETAPA 3: CLASSIFICAÇÃO
+
+def normalize_owts_by_integral(owts_df):
+    """
+    Normaliza as OWTs pela integral sobre a curva (área = 1)
+    """
+    owts_norm = owts_df.copy()
+    wavelengths = owts_df.columns.astype(float).values
+
+    for owt_idx in owts_df.index:
+        spectrum = owts_df.loc[owt_idx].values
+        area = np.trapz(spectrum, wavelengths)
+        if area > 0:
+            owts_norm.loc[owt_idx] = spectrum / area
+        else:
+            print(f"  ⚠️ OWT {owt_idx} tem área zero ou negativa: {area}")
+
+    return owts_norm
+
+import pandas as pd
+
+# Definir limites espectrais (os mesmos usados no corte das imagens)
+wl_min, wl_max = 412, 768
+
+# --- OWT OLCI ---
+owts_olci = pd.read_excel("/content/owts_olci.xlsx", index_col=0)
+# Filtrar colunas (bandas) pelo intervalo
+cols_olci = [c for c in owts_olci.columns if wl_min <= float(c) <= wl_max]
+owts_olci_clipped = owts_olci[cols_olci]
+owts_olci_norm = normalize_owts_by_integral(owts_olci_clipped)
+wavelengths_olci = owts_olci_norm.columns.astype(float).values
+
+# --- OWT EnMAP ---
+owts_enmap = pd.read_excel("/content/owts_enmap.xlsx", index_col=0)
+# Filtrar colunas (bandas) pelo intervalo
+cols_enmap = [c for c in owts_enmap.columns if wl_min <= float(c) <= wl_max]
+owts_enmap_clipped = owts_enmap[cols_enmap]
+owts_enmap_norm = normalize_owts_by_integral(owts_enmap_clipped)
+wavelengths_enmap_ref = owts_enmap_norm.columns.astype(float).values
+
+print(f"✅ OWTs preparadas! OLCI: {len(wavelengths_olci)} bandas | EnMAP: {len(wavelengths_enmap_ref)} bandas")
+
+
+import time
+
+# ============================================================================
+# 3. FUNÇÕES DE CLASSIFICAÇÃO VETORIZADAS
+# ============================================================================
+def normalize_by_integral(spectra_matrix, wavelengths):
+    """
+    Normaliza espectros pela integral (área = 1)
+
+    Args:
+        spectra_matrix: array (n_spectra, n_bands) - espectros a normalizar
+        wavelengths: array (n_bands,) - comprimentos de onda
+
+    Returns:
+        array normalizado com área = 1 para cada espectro
+    """
+    integrals = np.trapz(spectra_matrix, wavelengths, axis=1)
+    integrals = integrals.reshape(-1, 1)
+    integrals[integrals == 0] = 1
+    return spectra_matrix / integrals
+def normalize_owts_by_integral(owts_df):
+    """
+    Normaliza as OWTs pela integral sobre a curva (área = 1)
+    """
+    owts_norm = owts_df.copy()
+    wavelengths = owts_df.columns.astype(float).values
+
+    for owt_idx in owts_df.index:
+        spectrum = owts_df.loc[owt_idx].values
+        area = np.trapz(spectrum, wavelengths)
+        if area > 0:
+            owts_norm.loc[owt_idx] = spectrum / area
+        else:
+            print(f"  ⚠️ OWT {owt_idx} tem área zero ou negativa: {area}")
+
+    return owts_norm
+
+def sam_vectorized(pixels_matrix, owts_matrix):
+    """
+    Spectral Angle Mapper vetorizado
+    """
+    pixel_norms = np.linalg.norm(pixels_matrix, axis=1, keepdims=True)
+    pixel_norms[pixel_norms == 0] = 1
+    pixels_l2 = pixels_matrix / pixel_norms
+
+    owt_norms = np.linalg.norm(owts_matrix, axis=1, keepdims=True)
+    owt_norms[owt_norms == 0] = 1
+    owts_l2 = owts_matrix / owt_norms
+
+    dot_products = np.dot(pixels_l2, owts_l2.T)
+    dot_products = np.clip(dot_products, -1, 1)
+    angles = np.arccos(dot_products)
+
+    best_owts = np.argmin(angles, axis=1) + 1
+    min_angles = np.min(angles, axis=1)
+
+    return best_owts, min_angles
+
+def manhattan_quantized_vectorized(pixels_matrix, owts_matrix, n_quantis=5):
+    """
+    Manhattan com quantização MIN-MAX (consistente espectralmente)
+    """
+    n_pixels, n_bands = pixels_matrix.shape
+    n_owts = owts_matrix.shape[0]
+
+    pixels_clean = np.nan_to_num(pixels_matrix, nan=0.0)
+    owts_clean = np.nan_to_num(owts_matrix, nan=0.0)
+
+    # Normalização MIN-MAX
+    p_min = pixels_clean.min(axis=1, keepdims=True)
+    p_max = pixels_clean.max(axis=1, keepdims=True)
+    p_range = p_max - p_min
+    p_range[p_range == 0] = 1
+    pixels_norm = (pixels_clean - p_min) / p_range
+
+    o_min = owts_clean.min(axis=1, keepdims=True)
+    o_max = owts_clean.max(axis=1, keepdims=True)
+    o_range = o_max - o_min
+    o_range[o_range == 0] = 1
+    owts_norm = (owts_clean - o_min) / o_range
+
+    # Quantização uniforme
+    pixels_quantized = np.floor(pixels_norm * (n_quantis - 1)).astype(int)
+    owts_quantized = np.floor(owts_norm * (n_quantis - 1)).astype(int)
+    pixels_quantized = np.clip(pixels_quantized, 0, n_quantis - 1)
+    owts_quantized = np.clip(owts_quantized, 0, n_quantis - 1)
+
+    # Distância Manhattan
+    distances = np.zeros((n_pixels, n_owts))
+    for i in range(n_owts):
+        diff = np.abs(pixels_quantized - owts_quantized[i])
+        distances[:, i] = np.sum(diff, axis=1)
+
+    best_owts = np.argmin(distances, axis=1) + 1
+    min_distances = np.min(distances, axis=1)
+
+    return best_owts, min_distances
+
+def derivative_manhattan_vectorized(pixels_matrix, owts_matrix):
+    """
+    Manhattan da derivada discreta
+    """
+    pixels_deriv = np.diff(pixels_matrix, axis=1)
+    owts_deriv = np.diff(owts_matrix, axis=1)
+
+    n_pixels = pixels_deriv.shape[0]
+    n_owts = owts_deriv.shape[0]
+    distances = np.zeros((n_pixels, n_owts))
+
+    for i in range(n_owts):
+        diff = np.abs(pixels_deriv - owts_deriv[i])
+        distances[:, i] = np.sum(diff, axis=1)
+
+    best_owts = np.argmin(distances, axis=1) + 1
+    min_distances = np.min(distances, axis=1)
+
+    return best_owts, min_distances
+
+def classify_image_vectorized(image_data, owts_df, wavelengths, method='sam', batch_size=5000):
+    """
+    Classifica imagem de forma vetorizada
+    """
+    n_bands, n_rows, n_cols = image_data.shape
+    n_pixels = n_rows * n_cols
+    n_owts = len(owts_df)
+
+    print(f"\n📊 Iniciando classificação vetorizada:")
+    print(f"  Dimensões: {n_rows}x{n_cols} = {n_pixels} pixels")
+    print(f"  Bandas: {n_bands}")
+    print(f"  OWTs: {n_owts}")
+    print(f"  Método: {method}")
+    print(f"  Batch size: {batch_size}")
+
+    start_time = time.time()
+
+    owts_matrix = owts_df.values.astype(np.float32)
+    print("  Normalizando OWTs pela integral...")
+    owts_matrix = normalize_by_integral(owts_matrix, wavelengths)
+
+    image_2d = image_data.reshape(n_bands, n_pixels).T.astype(np.float32)
+    valid_mask = ~np.isnan(image_2d).any(axis=1)
+    valid_indices = np.where(valid_mask)[0]
+    n_valid = len(valid_indices)
+
+    print(f"  Pixels válidos: {n_valid}/{n_pixels} ({100*n_valid/n_pixels:.1f}%)")
+
+    if n_valid == 0:
+        print("  ⚠️ Nenhum pixel válido encontrado!")
+        return np.zeros((n_rows, n_cols), dtype=int), np.zeros((n_rows, n_cols))
+
+    valid_pixels = image_2d[valid_indices]
+    print("  Normalizando pixels válidos pela integral...")
+    valid_pixels_norm = normalize_by_integral(valid_pixels, wavelengths)
+
+    classification = np.zeros(n_pixels, dtype=int)
+    confidence = np.zeros(n_pixels, dtype=np.float32)
+
+    n_batches = (n_valid + batch_size - 1) // batch_size
+    print(f"  Processando em {n_batches} lotes...")
+
+    for batch_idx, start_idx in enumerate(range(0, n_valid, batch_size)):
+        end_idx = min(start_idx + batch_size, n_valid)
+        batch_indices = valid_indices[start_idx:end_idx]
+        batch_pixels = valid_pixels_norm[start_idx:end_idx]
+
+        batch_start = time.time()
+        print(f"    Lote {batch_idx + 1}/{n_batches}: {len(batch_pixels)} pixels...")
+
+        if method == 'sam':
+            best_owts, conf = sam_vectorized(batch_pixels, owts_matrix)
+        elif method == 'manhattan_quant':
+            best_owts, conf = manhattan_quantized_vectorized(batch_pixels, owts_matrix)
+        elif method == 'manhattan_derivative':
+            best_owts, conf = derivative_manhattan_vectorized(batch_pixels, owts_matrix)
+        else:
+            raise ValueError(f"Método desconhecido: {method}")
+
+        classification[batch_indices] = best_owts
+        confidence[batch_indices] = conf
+
+        batch_time = time.time() - batch_start
+        print(f"      Lote concluído em {batch_time:.1f}s")
+
+    classification = classification.reshape(n_rows, n_cols)
+    confidence = confidence.reshape(n_rows, n_cols)
+    invalid_mask_2d = (~valid_mask).reshape(n_rows, n_cols)
+    classification[invalid_mask_2d] = 0
+    confidence[invalid_mask_2d] = np.nan
+
+    total_time = time.time() - start_time
+    print(f"\n✅ Classificação concluída em {total_time/60:.1f} minutos!")
+    print(f"  Pixels classificados: {n_valid}")
+
+    return classification, confidence
+
+import time
+
+print("\n" + "="*80)
+print("CLASSIFICANDO SENTINEL-3 (ALINHADO E CORTADO)")
+print("="*80)
+
+# Converter o dataset cortado para array numpy (bandas, y, x)
+# Ordenamos as variáveis para garantir que a sequência espectral esteja correta
+bandas_ordenadas = sorted(ds_s3_clipped.data_vars, key=lambda x: int(x.split('_')[1]))
+image_data_olci = np.stack([ds_s3_clipped[b].values for b in bandas_ordenadas])
+wavelengths_olci_img = [float(b.split('_')[1]) for b in bandas_ordenadas]
+
+# Coordenadas (usando o grid alinhado)
+# Se o seu ds_s3_aligned não tem lat/lon explicitas como matriz, usamos a extensão do enmap_ref
+# mas para o plot do seu pipeline, precisamos de matrizes 2D:
+lon_s3 = ds_s3_aligned.coords['x'].values
+lat_s3 = ds_s3_aligned.coords['y'].values
+# Criar meshgrid se necessário para as funções de plot
+lon_s3_2d, lat_s3_2d = np.meshgrid(lon_s3, lat_s3)
+
+class_sam_s3, conf_sam_s3 = classify_image_vectorized(
+    image_data=image_data_olci,
+    owts_df=owts_olci_norm,
+    wavelengths=wavelengths_olci_img,
+    method='sam'
+)
+
+class_man_s3, conf_man_s3 = classify_image_vectorized(
+    image_data=image_data_olci,
+    owts_df=owts_olci_norm,
+    wavelengths=wavelengths_olci_img,
+    method='manhattan_quant',
+    batch_size=5000
+)
+
+class_deriv_s3, conf_deriv_s3 = classify_image_vectorized(
+    image_data=image_data_olci,
+    owts_df=owts_olci_norm,
+    wavelengths=wavelengths_olci_img,
+    method='manhattan_derivative',
+    batch_size=10000
+)
+
+print("\n" + "="*80)
+print("CLASSIFICANDO EnMAP (CORTADO)")
+print("="*80)
+
+# enmap_ref_clipped já é (band, y, x)
+image_data_enmap = enmap_ref_clipped.values
+# wavelengths_enmap_clipped foi definido no passo de corte anterior
+wls_enmap_img = wavelengths_enmap_clipped
+
+# Máscara de NoData (importante para o EnMAP)
+invalid_mask_enmap = np.isnan(image_data_enmap).any(axis=0) | (image_data_enmap.sum(axis=0) <= 0)
+image_data_enmap[:, invalid_mask_enmap] = np.nan
+
+# Coordenadas do EnMAP
+lon_en_2d, lat_en_2d = np.meshgrid(enmap_ref_clipped.x.values, enmap_ref_clipped.y.values)
+
+class_sam_enmap, conf_sam_enmap = classify_image_vectorized(
+    image_data=image_data_enmap,
+    owts_df=owts_enmap_norm,
+    wavelengths=wls_enmap_img,
+    method='sam',
+    batch_size=5000
+)
+class_man_enmap, conf_man_enmap = classify_image_vectorized(
+    image_data=image_data_enmap,
+    owts_df=owts_enmap_norm,
+    wavelengths=wls_enmap_img,
+    method='manhattan_quant',
+    batch_size=5000
+)
+
+class_deriv_enmap, conf_deriv_enmap = classify_image_vectorized(
+    image_data=image_data_enmap,
+    owts_df=owts_enmap_norm,
+    wavelengths=wls_enmap_img,
+    method='manhattan_derivative',
+    batch_size=10000
+)
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
+from matplotlib.patches import Patch
+from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+import matplotlib.font_manager as fm
+
+# ============================================================================
+# 1. CONFIGURAÇÃO DE PALETAS
+# ============================================================================
+colors_list = [
+    '#000000', # 0: Inválido (Preto)
+
+    # --- Grupo Amarelos e Laranjas (1, 6, 16) ---
+    '#FFD700', # 1: Amarelo Ouro (Agrupado)
+    '#555555', # 2: OWT 2 (Cinza - Escolha livre)
+    '#2E8B57', # 3: Verde Mar (Agrupado - Tons de Verde)
+    '#98FB98', # 4: Verde Pálido (Agrupado - Tons de Verde)
+    '#E066FF', # 5: OWT 5 (Orquídea - Escolha livre)
+    '#FFA500', # 6: Laranja (Agrupado)
+    '#40E0D0', # 7: OWT 7 (Turquesa - Escolha livre)
+    '#800000', # 8: OWT 8 (Bordeaux - Escolha livre)
+    '#00FF7F', # 9: Verde Primavera (Agrupado - Tons de Verde)
+
+    # --- Grupo Azuis (10, 12, 18, 21) ---
+    '#4169E1', # 10: Azul Royal (Agrupado)
+
+    # --- Grupo Rosa/Lilás (11, 13, 14) ---
+    '#FFB6C1', # 11: Rosa Claro (Agrupado)
+    '#000080', # 12: Marinho (Agrupado - Tons de Azul)
+    '#DA70D6', # 13: Orquídea/Lilás (Agrupado)
+    '#8B008B', # 14: Magenta Escuro (Agrupado)
+
+    # --- Continuação Verdes ---
+    '#006400', # 15: Verde Escuro (Agrupado - Tons de Verde)
+
+    # --- Continuação Amarelos/Laranjas ---
+    '#FF8C00', # 16: Laranja Escuro (Agrupado)
+
+    # --- Continuação Verdes ---
+    '#ADFF2F', # 17: Verde Amarelado (Agrupado - Tons de Verde)
+
+    # --- Continuação Azuis ---
+    '#0000FF', # 18: Azul Puro (Agrupado)
+
+    '#D2B48C', # 19: OWT 19 (Tan/Areia - Escolha livre)
+    '#708090', # 20: OWT 20 (Cinza Azulado - Escolha livre)
+
+    # --- Continuação Azuis ---
+    '#87CEEB'  # 21: Azul Céu (Agrupado)
+]
+cmap_owt = ListedColormap(colors_list)
+cmap_div = ListedColormap(['black', 'red'])
+
+# ============================================================================
+# 2. PRODUÇÃO DA GRADE 3x3
+# ============================================================================
+fig, axes = plt.subplots(3, 3, figsize=(24, 26), gridspec_kw={'wspace': 0.0, 'hspace': 0.1})
+
+
+metodos = ['SAM', 'SAD Quantizada', 'SAD Derivada Discreta']
+matrizes_enmap = [class_sam_enmap, class_man_enmap, class_deriv_enmap]
+matrizes_s3 = [class_sam_s3, class_man_s3, class_deriv_s3]
+
+# Extensão Geográfica
+try:
+    left, bottom, right, top = enmap_ref.rio.bounds()
+    extent = [left, right, bottom, top]
+except:
+    extent = [675000, 705000, 7453000, 7492000]
+
+for row in range(3):
+    enmap_data = matrizes_enmap[row]
+    s3_data = matrizes_s3[row]
+
+    # --- Colunas 0 e 1 (Sensores) ---
+    for col, data, sensor in zip([0, 1], [enmap_data, s3_data], ['EnMAP', 'Sentinel-3']):
+        ax = axes[row, col]
+        ax.set_facecolor('black')
+        ax.imshow(data, extent=extent, origin='upper', cmap=cmap_owt, vmin=0, vmax=21)
+        ax.set_title(f'{sensor} - {metodos[row]}', fontsize=15, fontweight='bold')
+
+    # --- Coluna 2 (Divergência) ---
+    ax_div = axes[row, 2]
+    ax_div.set_facecolor('white')
+
+    div_map = np.full(enmap_data.shape, np.nan)
+    valid_mask = (enmap_data > 0) & (s3_data > 0)
+
+    pixels_iguais = np.sum(valid_mask & (enmap_data == s3_data))
+    total_validos = np.sum(valid_mask)
+    convergencia = (pixels_iguais / total_validos * 100) if total_validos > 0 else 0
+
+    div_map[valid_mask & (enmap_data == s3_data)] = 1
+    div_map[valid_mask & (enmap_data != s3_data)] = 0
+
+    ax_div.imshow(div_map, extent=extent, origin='upper', cmap=cmap_div, interpolation='nearest')
+    ax_div.set_title(f'Divergência - {metodos[row]}', fontsize=15, fontweight='bold')
+
+    # --- AJUSTE DE LEGENDAS INTERNAS ---
+    # 1. Nota de Convergência (Texto Preto) no Canto Inferior Esquerdo
+    ax_div.text(0.05, 0.05, f'Convergência: {convergencia:.1f}%',
+                transform=ax_div.transAxes, fontsize=13, fontweight='black',
+                color='black', bbox=dict(facecolor='white', alpha=0.9, edgecolor='black', boxstyle='round,pad=0.3'),
+                zorder=10)
+
+    # 2. Legenda de Cores LOGO ACIMA da nota
+    legend_elements = [Patch(facecolor='red', label='Convergência'), Patch(facecolor='black', label='Divergência')]
+    ax_div.legend(handles=legend_elements, loc='lower left', bbox_to_anchor=(0.02, 0.12),
+                  fontsize=15, frameon=True, facecolor='white', edgecolor='black',
+                  title="Status", title_fontsize=11)
+
+    # Elementos Cartográficos
+    for j, ax in enumerate(axes[row, :]):
+        ax.grid(True, linestyle=':', alpha=0.3, color='gray' if j==2 else 'white')
+        ax.annotate('N', xy=(0.08, 0.92), xycoords='axes fraction',
+                    arrowprops=dict(facecolor='black' if j==2 else 'white', width=2, headwidth=8),
+                    ha='center', va='center', fontsize=12, fontweight='bold',
+                    bbox=dict(boxstyle="round,pad=0.2", fc="white" if j==2 else "black", alpha=0.3))
+        scalebar = AnchoredSizeBar(ax.transData, 3000, '3 km', 'lower right', pad=0.5,
+                                   color='black' if j==2 else 'white', frameon=False,
+                                   size_vertical=80, fontproperties=fm.FontProperties(size=9, weight='bold'))
+        ax.add_artist(scalebar)
+
+# ============================================================================
+# 3. LEGENDA GERAL E ESTÉTICA
+# ============================================================================
+legend_owt = [Patch(facecolor=colors_list[i], label=f'{i}') for i in range(1, 22)]
+# Título (ligeiramente mais alto)
+plt.suptitle('21 OWTs: EnMAP 300m 62 bandas vs Sentinel-3',
+             fontsize=26, fontweight='black', y=0.95)
+
+# Legenda logo abaixo do título
+fig.legend(handles=legend_owt,
+           title="Classes OWT (Optical Water Types)",
+           loc='upper center',
+           bbox_to_anchor=(0.5, 0.935),
+           ncol=11,
+           fontsize=15,
+           title_fontsize=16,
+           frameon=True,
+           edgecolor='black')
+
+# Ajuste do espaço útil dos subplots
+plt.subplots_adjust(top=0.88)
+
+for i in range(3):
+    for j in range(3):
+        if i < 2: axes[i, j].set_xticklabels([])
+        if j > 0: axes[i, j].set_yticklabels([])
+        if i == 2: axes[i, j].set_xlabel('Leste (m)', fontweight='bold')
+        if j == 0: axes[i, j].set_ylabel('Norte (m)', fontweight='bold')
+
+plt.savefig('convergencia_final_layout_ajustado.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+print(f"✅ Mapa finalizado. Convergência calculada e legendas posicionadas no canto inferior esquerdo.")
+
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+
+def plot_confusion_matrices(matrizes_enmap, matrizes_s3, metodos):
+    fig, axes = plt.subplots(1, 3, figsize=(25, 8))
+
+    # Lista de labels de 1 a 21
+    labels = np.arange(1, 22)
+
+    for i, (en_data, s3_data, metodo) in enumerate(zip(matrizes_enmap, matrizes_s3, metodos)):
+        # 1. Achatar as matrizes e remover valores de NoData (0 ou NaN)
+        # Consideramos apenas onde AMBOS têm dados válidos (1-21)
+        mask = (en_data > 0) & (s3_data > 0)
+        y_true = s3_data[mask].flatten() # Sentinel-3 como Referência
+        y_pred = en_data[mask].flatten() # EnMAP como Predição
+
+        # 2. Calcular a matriz de confusão
+        cm = confusion_matrix(y_true, y_pred, labels=labels)
+
+        # 3. Normalizar por linha (Recall / Sensibilidade)
+        # Adicionamos um pequeno epsilon para evitar divisão por zero
+        cm_norm = cm.astype('float') / (cm.sum(axis=1)[:, np.newaxis] + 1e-9)
+
+        # 4. Plotar usando Seaborn
+        ax = axes[i]
+        sns.heatmap(cm_norm, annot=False, cmap='YlGnBu', ax=ax, cbar=True,
+                    xticklabels=labels, yticklabels=labels)
+
+        ax.set_title(f'Matriz de Confusão: {metodo}\n(S3 vs EnMAP)', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Predição (EnMAP)', fontweight='bold')
+        ax.set_ylabel('Referência (Sentinel-3)', fontweight='bold')
+
+    plt.tight_layout()
+    plt.show()
+
+# --- Execução ---
+metodos_nomes = ['SAM', 'SAD Quantizada', 'SAD Derivada']
+matrizes_enmap_list = [class_sam_enmap, class_man_enmap, class_deriv_enmap]
+matrizes_s3_list = [class_sam_s3, class_man_s3, class_deriv_s3]
+
+plot_confusion_matrices(matrizes_enmap_list, matrizes_s3_list, metodos_nomes)
+
+import pandas as pd
+import numpy as np
+from sklearn.metrics import confusion_matrix
+
+# 1. Definir os nomes das métricas e os labels (1 a 21)
+metodos_nomes = ['SAM', 'SAD_Quantizada', 'SAD_Derivada']
+matrizes_enmap_list = [class_sam_enmap, class_man_enmap, class_deriv_enmap]
+matrizes_s3_list = [class_sam_s3, class_man_s3, class_deriv_s3]
+labels = np.arange(1, 22)
+labels_str = [f'OWT_{i}' for i in labels]
+
+# Dicionário para armazenar as matrizes como variáveis locais
+matrizes_locais = {}
+
+# Criar um ExcelWriter para salvar todas em um único arquivo com várias abas
+with pd.ExcelWriter('matrizes_confusao_owt.xlsx') as writer:
+
+    for nome, en_data, s3_data in zip(metodos_nomes, matrizes_enmap_list, matrizes_s3_list):
+
+        # Filtrar pixels válidos (ambos > 0)
+        mask = (en_data > 0) & (s3_data > 0)
+        y_true = s3_data[mask].flatten()
+        y_pred = en_data[mask].flatten()
+
+        # Calcular matriz de confusão absoluta
+        cm = confusion_matrix(y_true, y_pred, labels=labels)
+
+        # Criar DataFrame formatado
+        df_cm = pd.DataFrame(cm, index=[f'Ref_S3_{i}' for i in labels],
+                             columns=[f'Pred_EnMAP_{i}' for i in labels])
+
+        # Adicionar versão normalizada (porcentagem) para facilitar análise
+        df_cm_norm = df_cm.divide(df_cm.sum(axis=1), axis=0).fillna(0) * 100
+
+        # Salvar no dicionário global (variável local)
+        matrizes_locais[f'cm_{nome}'] = df_cm
+        matrizes_locais[f'cm_{nome}_perc'] = df_cm_norm
+
+        # Salvar no Excel (Abas separadas para contagem e porcentagem)
+        df_cm.to_excel(writer, sheet_name=f'{nome}_Absoluto')
+        df_cm_norm.to_excel(writer, sheet_name=f'{nome}_Percentual')
+
+print("✅ Matrizes exportadas para 'matrizes_confusao_owt.xlsx'")
+print("✅ Variáveis disponíveis no dicionário 'matrizes_locais'")
+
+# Acessar a variável local
+analise = matrizes_locais['cm_SAD_Quantizada_perc']
+
+# Ver apenas os 5 primeiros OWTs
+print(analise.iloc[:5, :5])
+
+# Ou filtrar casos onde a confusão foi maior que 20% (fora a diagonal)
+# (Isso ajuda a identificar qual OWT está "roubando" pixels de outro)
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.metrics import confusion_matrix
+from scipy.cluster.hierarchy import linkage, dendrogram, fcluster
+from sklearn.manifold import MDS
+
+# =========================
+# CONFIG
+# =========================
+labels = np.arange(1, 22)
+labels_str = [f'OWT_{i}' for i in labels]
+
+# =========================
+# FUNÇÃO PRINCIPAL
+# =========================
+def analyze_confusion_pipeline(en_data, s3_data, metodo, save_prefix='output'):
+
+    # -------------------------
+    # 1. FILTRO
+    # -------------------------
+    mask = (en_data > 0) & (s3_data > 0)
+    y_true = s3_data[mask].flatten()
+    y_pred = en_data[mask].flatten()
+
+    # -------------------------
+    # 2. MATRIZ DE CONFUSÃO
+    # -------------------------
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+
+    cm_norm = cm.astype(float) / (cm.sum(axis=1)[:, None] + 1e-9)
+
+    # -------------------------
+    # 3. SIMETRIZAÇÃO (estrutura)
+    # -------------------------
+    S = (cm_norm + cm_norm.T) / 2
+
+    # -------------------------
+    # 4. DECOMPOSIÇÃO ESPECTRAL
+    # -------------------------
+    eigvals, eigvecs = np.linalg.eig(cm_norm.T)
+
+    # -------------------------
+    # 5. CLUSTER HIERÁRQUICO
+    # -------------------------
+    Z = linkage(S, method='ward')
+
+    # cortar em N grupos (ajuste conforme necessário)
+    grupos = fcluster(Z, t=5, criterion='maxclust')
+
+    # -------------------------
+    # 6. EMBEDDING (MDS)
+    # -------------------------
+    dist = 1 - S
+    mds = MDS(n_components=2, dissimilarity='precomputed', random_state=42)
+    coords = mds.fit_transform(dist)
+
+    # -------------------------
+    # 7. PLOTS
+    # -------------------------
+    fig = plt.figure(figsize=(20, 12))
+
+    # Heatmap
+    plt.subplot(2,2,1)
+    sns.heatmap(cm_norm, cmap='YlGnBu',
+                xticklabels=labels, yticklabels=labels)
+    plt.title(f'{metodo} - Confusão Normalizada')
+    plt.xlabel('Predição')
+    plt.ylabel('Referência')
+
+    # Dendrograma
+    plt.subplot(2,2,2)
+    dendrogram(Z, labels=labels)
+    plt.title('Dendrograma (estrutura de confusão)')
+
+    # Embedding
+    plt.subplot(2,2,3)
+    plt.scatter(coords[:,0], coords[:,1])
+    for i, txt in enumerate(labels):
+        plt.text(coords[i,0], coords[i,1], str(txt))
+    plt.title('Embedding (MDS)')
+
+    # Autovalores
+    plt.subplot(2,2,4)
+    plt.plot(np.sort(np.real(eigvals))[::-1], 'o-')
+    plt.title('Espectro de Autovalores')
+
+    plt.tight_layout()
+    plt.savefig(f'{save_prefix}_{metodo}.png', dpi=300)
+    plt.show()
+
+    # -------------------------
+    # 8. EXPORTAÇÃO
+    # -------------------------
+    df_cm = pd.DataFrame(cm, index=labels_str, columns=labels_str)
+    df_norm = pd.DataFrame(cm_norm, index=labels_str, columns=labels_str)
+    df_sim = pd.DataFrame(S, index=labels_str, columns=labels_str)
+    df_embed = pd.DataFrame(coords, index=labels_str, columns=['Dim1','Dim2'])
+    df_groups = pd.DataFrame(grupos, index=labels_str, columns=['Grupo'])
+    df_eig = pd.DataFrame({
+        'autovalor': eigvals.real
+    })
+
+    with pd.ExcelWriter(f'{save_prefix}_{metodo}.xlsx') as writer:
+        df_cm.to_excel(writer, 'Confusao_Absoluta')
+        df_norm.to_excel(writer, 'Confusao_Normalizada')
+        df_sim.to_excel(writer, 'Similaridade')
+        df_embed.to_excel(writer, 'Embedding')
+        df_groups.to_excel(writer, 'Clusters')
+        df_eig.to_excel(writer, 'Autovalores')
+
+    # -------------------------
+    # 9. OUTPUTS
+    # -------------------------
+    return {
+        'cm': cm,
+        'cm_norm': cm_norm,
+        'similaridade': S,
+        'eigvals': eigvals,
+        'coords': coords,
+        'clusters': grupos
+    }
+
+metodos_nomes = ['SAM', 'SAD_Quantizada', 'SAD_Derivada']
+matrizes_enmap_list = [class_sam_enmap, class_man_enmap, class_deriv_enmap]
+matrizes_s3_list = [class_sam_s3, class_man_s3, class_deriv_s3]
+
+resultados = {}
+
+for nome, en, s3 in zip(metodos_nomes, matrizes_enmap_list, matrizes_s3_list):
+    resultados[nome] = analyze_confusion_pipeline(
+        en, s3, nome, save_prefix='analise_owt'
+    )
+
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+
+labels = np.arange(1, 22)
+
+def extrair_autovetores_confusao(en_data, s3_data, metodo, n_modos=5):
+
+    # -------------------------
+    # 1. FILTRO
+    # -------------------------
+    mask = (en_data > 0) & (s3_data > 0)
+    y_true = s3_data[mask].flatten()
+    y_pred = en_data[mask].flatten()
+
+    # -------------------------
+    # 2. MATRIZ NORMALIZADA
+    # -------------------------
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    cm_norm = cm.astype(float) / (cm.sum(axis=1)[:, None] + 1e-9)
+
+    # -------------------------
+    # 3. AUTOVALORES/VETORES
+    # -------------------------
+    eigvals, eigvecs = np.linalg.eig(cm_norm.T)
+
+    # Parte real (evita ruído numérico complexo)
+    eigvals = np.real(eigvals)
+    eigvecs = np.real(eigvecs)
+
+    # -------------------------
+    # 4. ORDENAR
+    # -------------------------
+    idx = np.argsort(eigvals)[::-1]
+    eigvals_sorted = eigvals[idx]
+    eigvecs_sorted = eigvecs[:, idx]
+
+    # -------------------------
+    # 5. SELECIONAR TOP MODOS
+    # -------------------------
+    modos = eigvecs_sorted[:, :n_modos]
+
+    # -------------------------
+    # 6. PLOT
+    # -------------------------
+    fig, axes = plt.subplots(n_modos, 1, figsize=(10, 2*n_modos))
+
+    for i in range(n_modos):
+        ax = axes[i]
+        ax.bar(labels, modos[:, i])
+        ax.set_title(f'{metodo} - Autovetor {i+1} (λ={eigvals_sorted[i]:.3f})')
+        ax.set_xlabel('OWT')
+        ax.set_ylabel('Peso')
+        ax.grid(alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+    return {
+        'eigvals': eigvals_sorted,
+        'eigvecs': eigvecs_sorted,
+        'modos': modos,
+        'cm_norm': cm_norm
+    }
+
+metodos_nomes = ['SAM', 'SAD_Quantizada', 'SAD_Derivada']
+matrizes_enmap_list = [class_sam_enmap, class_man_enmap, class_deriv_enmap]
+matrizes_s3_list = [class_sam_s3, class_man_s3, class_deriv_s3]
+
+resultados_autovetores = {}
+
+for nome, en, s3 in zip(metodos_nomes, matrizes_enmap_list, matrizes_s3_list):
+    resultados_autovetores[nome] = extrair_autovetores_confusao(
+        en, s3, nome, n_modos=5
+    )
+
+owts_enmap_norm.head()
+
+owts_olci_norm.head()
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from sklearn.metrics import confusion_matrix
+from sklearn.manifold import MDS
+
+# =========================
+# CONFIG
+# =========================
+labels = np.arange(1, 22)
+
+# =========================
+# FUNÇÕES BASE
+# =========================
+
+def compute_confusion(en_data, s3_data):
+    mask = (en_data > 0) & (s3_data > 0)
+    y_true = s3_data[mask].flatten()
+    y_pred = en_data[mask].flatten()
+
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    cm_norm = cm.astype(float) / (cm.sum(axis=1)[:, None] + 1e-9)
+
+    return cm, cm_norm
+
+
+def spectral_decomposition(cm_norm, n_modes=5):
+    eigvals, eigvecs = np.linalg.eig(cm_norm.T)
+
+    eigvals = np.real(eigvals)
+    eigvecs = np.real(eigvecs)
+
+    idx = np.argsort(eigvals)[::-1]
+
+    return eigvals[idx], eigvecs[:, idx][:, :n_modes]
+
+
+def espectro_modo(modo, espectros):
+    return np.dot(modo, espectros)
+
+
+def separabilidade(a, b):
+    return np.linalg.norm(a - b)
+
+
+# =========================
+# PIPELINE PRINCIPAL
+# =========================
+
+def pipeline_confusao_espectral(en_data, s3_data, metodo,
+                               owts_enmap_norm, owts_olci_norm,
+                               n_modes=5, save=False):
+
+    # -------------------------
+    # 1. MATRIZ
+    # -------------------------
+    cm, cm_norm = compute_confusion(en_data, s3_data)
+
+    # -------------------------
+    # 2. DECOMPOSIÇÃO
+    # -------------------------
+    eigvals, modos = spectral_decomposition(cm_norm, n_modes)
+
+    # -------------------------
+    # 3. LOOP NOS MODOS
+    # -------------------------
+    resultados = []
+
+    for k in range(n_modes):
+
+        modo = modos[:, k]
+
+        # separar grupos
+        pos = modo > 0
+        neg = modo < 0
+
+        # espectros médios
+        spec_pos_enmap = owts_enmap_norm[pos].mean(axis=0)
+        spec_neg_enmap = owts_enmap_norm[neg].mean(axis=0)
+
+        spec_pos_olci = owts_olci_norm[pos].mean(axis=0)
+        spec_neg_olci = owts_olci_norm[neg].mean(axis=0)
+
+        # separabilidade
+        sep_enmap = separabilidade(spec_pos_enmap, spec_neg_enmap)
+        sep_olci = separabilidade(spec_pos_olci, spec_neg_olci)
+
+        resultados.append({
+            'modo': k+1,
+            'autovalor': eigvals[k],
+            'sep_enmap': sep_enmap,
+            'sep_olci': sep_olci,
+            'n_pos': pos.sum(),
+            'n_neg': neg.sum()
+        })
+
+        # -------------------------
+        # 4. PLOTS
+        # -------------------------
+        fig, axes = plt.subplots(1,3, figsize=(18,4))
+
+        # Autovetor
+        axes[0].bar(labels, modo)
+        axes[0].set_title(f'{metodo} - Autovetor {k+1} (λ={eigvals[k]:.3f})')
+        axes[0].set_xlabel('OWT')
+        axes[0].set_ylabel('Peso')
+
+        # EnMAP
+        axes[1].plot(spec_pos_enmap, label='Positivo')
+        axes[1].plot(spec_neg_enmap, label='Negativo')
+        axes[1].set_title(f'EnMAP (sep={sep_enmap:.3f})')
+        axes[1].legend()
+
+        # OLCI
+        axes[2].plot(spec_pos_olci, label='Positivo')
+        axes[2].plot(spec_neg_olci, label='Negativo')
+        axes[2].set_title(f'OLCI (sep={sep_olci:.3f})')
+        axes[2].legend()
+
+        plt.tight_layout()
+        plt.show()
+
+    # -------------------------
+    # 5. TABELA FINAL
+    # -------------------------
+    df_resultados = pd.DataFrame(resultados)
+
+    print(f'\n===== {metodo} =====')
+    print(df_resultados)
+
+    if save:
+        df_resultados.to_excel(f'resultados_{metodo}.xlsx', index=False)
+
+    return {
+        'cm': cm,
+        'cm_norm': cm_norm,
+        'eigvals': eigvals,
+        'modos': modos,
+        'resumo': df_resultados
+    }
+
+metodos_nomes = ['SAM', 'SAD_Quantizada', 'SAD_Derivada']
+matrizes_enmap_list = [class_sam_enmap, class_man_enmap, class_deriv_enmap]
+matrizes_s3_list = [class_sam_s3, class_man_s3, class_deriv_s3]
+
+resultados_finais = {}
+
+for nome, en, s3 in zip(metodos_nomes, matrizes_enmap_list, matrizes_s3_list):
+
+    resultados_finais[nome] = pipeline_confusao_espectral(
+        en, s3, nome,
+        owts_enmap_norm,
+        owts_olci_norm,
+        n_modes=5,
+        save=True
+    )
+
+#PIXEL
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+# 1. LOCALIZAÇÃO DO PIXEL
+target_lat, target_lon = -22.845262, -43.170707
+row_idx = np.abs(enmap_ref_clipped.y.values - target_lat).argmin()
+col_idx = np.abs(enmap_ref_clipped.x.values - target_lon).argmin()
+
+# Extração dos dados brutos para transformação
+rrs_en = image_data_enmap[:, row_idx, col_idx]
+rrs_s3 = image_data_olci[:, row_idx, col_idx]
+
+# 2. IDENTIFICAÇÃO DOS OWTS
+ids_en = [class_sam_enmap[row_idx, col_idx], class_man_enmap[row_idx, col_idx], class_deriv_enmap[row_idx, col_idx]]
+ids_s3 = [class_sam_s3[row_idx, col_idx], class_man_s3[row_idx, col_idx], class_deriv_s3[row_idx, col_idx]]
+
+# ============================================================================
+# 3. PLOTAGEM CONFIGURADA
+# ============================================================================
+fig, axes = plt.subplots(2, 3, figsize=(22, 14), gridspec_kw={'height_ratios': [1, 1.2]})
+
+metodos = ['SAM', 'QC', 'DC']
+matrizes_en = [class_sam_enmap, class_man_enmap, class_deriv_enmap]
+
+for i in range(3):
+    # --- LINHA 1: LOCALIZAÇÃO ESPACIAL (Zoom no Pixel) ---
+    ax_map = axes[0, i]
+    # Zoom de 40x40 pixels ao redor do ponto
+    r_start, r_end = max(0, row_idx-20), min(class_sam_enmap.shape[0], row_idx+20)
+    c_start, c_end = max(0, col_idx-20), min(class_sam_enmap.shape[1], col_idx+20)
+
+    crop_map = matrizes_en[i][r_start:r_end, c_start:c_end]
+    ax_map.imshow(crop_map, cmap=cmap_owt, vmin=0, vmax=21, interpolation='nearest')
+    # Marcar o pixel analisado (ajustado ao crop)
+    ax_map.scatter(col_idx - c_start, row_idx - r_start, marker='x', color='white', s=200, lw=3)
+    ax_map.set_title(f"Localização: {metodos[i]} (EnMAP)", fontsize=14, fontweight='bold')
+    ax_map.axis('off')
+
+    # --- LINHA 2: ESPECTROS TRANSFORMADOS ---
+    ax_spec = axes[1, i]
+
+    if i == 0: # SAM (Normalizado pela Norma para visualização)
+        norm_en = rrs_en / np.linalg.norm(rrs_en)
+        norm_s3 = rrs_s3 / np.linalg.norm(rrs_s3)
+        ax_spec.plot(wls_enmap_img, norm_en, 'r-', lw=2, label='EnMAP (Unitário)')
+        ax_spec.plot(wavelengths_olci_img, norm_s3, 'ks', label='S3 (Unitário)')
+        # Referências
+        ref_en = owts_enmap_norm.iloc[int(ids_en[0]-1)].values
+        ref_s3 = owts_olci_norm.iloc[int(ids_s3[0]-1)].values
+        ax_spec.plot(wls_enmap_img, ref_en/np.linalg.norm(ref_en), 'r--', alpha=0.6, label=f'Ref OWT {int(ids_en[0])}')
+        ax_spec.plot(wavelengths_olci_img, ref_s3/np.linalg.norm(ref_s3), 'k--', alpha=0.6, label=f'Ref OWT {int(ids_s3[0])}')
+        ax_spec.set_ylabel("Refletância Normalizada (Norma)")
+
+    elif i == 1: # QC (Energia Relativa)
+        q_en = rrs_en / np.nansum(rrs_en)
+        q_s3 = rrs_s3 / np.nansum(rrs_s3)
+        ax_spec.plot(wls_enmap_img, q_en, 'r-', lw=2, label='EnMAP (QC Space)')
+        ax_spec.plot(wavelengths_olci_img, q_s3, 'ks-', label='S3 (QC Space)')
+        # No seu pipeline, as referências já estão nessa escala
+        ax_spec.plot(wls_enmap_img, owts_enmap_norm.iloc[int(ids_en[1]-1)], 'r--', alpha=0.6)
+        ax_spec.plot(wavelengths_olci_img, owts_olci_norm.iloc[int(ids_s3[1]-1)], 'k--', alpha=0.6)
+        ax_spec.set_ylabel("Energia Relativa ($\sum = 1$)")
+
+    elif i == 2: # DC (Derivada)
+        d_en = np.diff(rrs_en) / np.diff(wls_enmap_img)
+        d_s3 = np.diff(rrs_s3) / np.diff(wavelengths_olci_img)
+        ax_spec.plot(wls_enmap_img[:-1], d_en, 'r-', lw=2, label='EnMAP (Derivada)')
+        ax_spec.plot(wavelengths_olci_img[:-1], d_s3, 'ks-', label='S3 (Derivada)')
+        ax_spec.set_ylabel("dRrs / d$\lambda$")
+
+    ax_spec.set_title(f"Espaço Transformado: {metodos[i]}", fontsize=14)
+    ax_spec.set_xlabel("Comprimento de Onda (nm)")
+    ax_spec.legend(fontsize=9)
+    ax_spec.grid(alpha=0.2)
+
+plt.tight_layout()
+plt.show()
